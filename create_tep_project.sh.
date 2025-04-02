@@ -1,0 +1,15 @@
+#!/bin/bash
+# Имя файла: create_tep_project.sh
+
+# 1. Создание и активация виртуального окружения
+echo "Создаём виртуальное окружение..."
+python -m venv venv
+source venv/bin/activate
+
+# 2. Установка необходимых библиотек
+echo "Устанавливаем зависимости..."
+pip install shapely matplotlib pandas
+
+# 3. Сообщение об окончании
+echo "Готово. Теперь можно запускать скрипт TEP_calculation.py командой:"
+echo "python TEP_calculation.py"
