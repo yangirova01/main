@@ -1,2 +1,4 @@
-cianparser
-geopy>=2.3.0
+streamlit>=1.0
+plotly>=5.0.0
+pandas>=1.0
+numpy>=1.0
