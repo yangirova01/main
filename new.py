@@ -71,7 +71,7 @@ def create_pie_chart(labels, values):
             textinfo='percent+label',
             textposition='inside',
             marker=dict(colors=['#636EFA', '#EF553B', '#00CC96', '#AB63FA', '#FFA15A'])
-        )]
+        )])
         
         fig.update_layout(
             title_text="Распределение площади участка",
@@ -98,7 +98,7 @@ def main():
             floors = st.number_input("Этажность", min_value=1, value=10)
         with col2:
             commercial_ground_floor = st.radio("1-й этаж под коммерцию?", ["Да", "Нет"], index=0)
-            is_attached_kindergarten = st.radio("Детский сад встроенно-пристроенный?", ["ДА", "НЕТ"], index=1)
+            is_attached_kindergarten = st.radio("Детский сад встроенно-пристроенный?", ["Да", "Нет"], index=1)
 
     # Валидация ввода
     errors = validate_input(land_area, building_footprint)
@@ -155,6 +155,35 @@ def main():
         with col2:
             st.metric("Общая площадь участка (кв.м)", f"{land_area:,.2f}")
             st.metric("Свободная площадь участка (кв.м)", f"{free_area:,.2f}")
+
+        # Вывод данных о социальных объектах
+        if kindergarten_data and school_data:
+            st.markdown("---")
+            st.subheader("🏫 Социальные объекты")
+            
+            st.write("#### Детские сады")
+            col1, col2 = st.columns(2)
+            with col1:
+                st.write("**По старому МНГП (36 мест/10000 кв.м)**")
+                st.metric("Количество мест", kindergarten_data["old"]["places"])
+                st.metric("Количество групп", kindergarten_data["old"]["groups"])
+                st.metric("Количество зданий", kindergarten_data["old"]["buildings"])
+            with col2:
+                st.write("**По новому МНГП (27 мест/10000 кв.м)**")
+                st.metric("Количество мест", kindergarten_data["new"]["places"])
+                st.metric("Количество групп", kindergarten_data["new"]["groups"])
+                st.metric("Количество зданий", kindergarten_data["new"]["buildings"])
+
+            st.write("#### Школы")
+            col1, col2 = st.columns(2)
+            with col1:
+                st.write("**По старому МНГП (76 мест/10000 кв.м)**")
+                st.metric("Количество мест", school_data["old"]["places"])
+                st.metric("Площадь здания (кв.м)", f"{school_data['old']['building_area']:,.2f}")
+            with col2:
+                st.write("**По новому МНГП (57 мест/10000 кв.м)**")
+                st.metric("Количество мест", school_data["new"]["places"])
+                st.metric("Площадь здания (кв.м)", f"{school_data['new']['building_area']:,.2f}")
 
     except Exception as e:
         st.error(f"Произошла ошибка при расчётах: {str(e)}")
