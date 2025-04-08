@@ -103,7 +103,7 @@ def main():
         hole=0.3,
         textinfo='percent+label',
         marker=dict(colors=['#636EFA', '#EF553B', '#00CC96', '#AB63FA', '#FFA15A'])
-    ])  # Закрывающая скобка исправлена
+    )])  # Все скобки правильно сбалансированы
     
     fig.update_layout(
         title_text="Распределение площади участка",
