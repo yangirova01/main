@@ -1,7 +1,7 @@
 import streamlit as st
 import math
-import matplotlib.pyplot as plt
-
+import plotly.graph_objects as go
+import pandas as pd
 
 def main():
     st.title("📊 Калькулятор ТЭП для жилого комплекса")
@@ -35,9 +35,8 @@ def main():
 
     with st.expander("🌳 Озеленение и СБП"):
         landscaping_norm = st.number_input("Норма озеленения (кв.м на 100 кв.м жилья)", value=20.0)
-        landscaping_reduction = st.number_input("Коэффициент уменьшения озеленения", value=0.3, min_value=0.0,
-                                                max_value=1.0)
-
+        landscaping_reduction = st.number_input("Коэффициент уменьшения озеленения", value=0.3, min_value=0.0, max_value=1.0)
+        
         st.write("**Нормы СБП (кв.м на 100 кв.м жилья):**")
         sbp_playgrounds = st.number_input("Детские площадки", value=2.3)
         sbp_adult = st.number_input("Площадки для взрослых", value=0.4)
@@ -54,8 +53,7 @@ def main():
 
     total_sellable_area = commercial_area + residential_area
 
-    parking_spaces = math.ceil(residential_area / parking_norm_housing) + math.ceil(
-        commercial_area / parking_norm_commercial)
+    parking_spaces = math.ceil(residential_area / parking_norm_housing) + math.ceil(commercial_area / parking_norm_commercial)
     parking_spaces_disabled = math.ceil(parking_spaces * 0.1)
 
     parking_area = parking_spaces * parking_width * parking_length
@@ -86,24 +84,33 @@ def main():
     for param, value in results.items():
         st.metric(label=param, value=f"{value:.2f}" if isinstance(value, float) else value)
 
-    # Визуализация (исправленная часть)
+    # Визуализация с использованием Plotly
     st.markdown("---")
     st.subheader("📊 Распределение площади участка")
-
+    
     labels = ["Здание", "Парковка", "Озеленение", "СБП", "Свободная площадь"]
-    sizes = [
+    values = [
         building_footprint,
         total_parking_area,
         landscaping_area,
         sbp_area,
         free_area
     ]
-
-    fig, ax = plt.subplots()
-    ax.pie(sizes, labels=labels, autopct="%1.1f%%", startangle=90)
-    ax.axis("equal")  # Круг вместо эллипса
-    st.pyplot(fig)
-
+    
+    fig = go.Figure(data=[go.Pie(
+        labels=labels,
+        values=values,
+        hole=0.3,
+        textinfo='percent+label',
+        marker=dict(colors=['#636EFA', '#EF553B', '#00CC96', '#AB63FA', '#FFA15A'])
+    ])
+    
+    fig.update_layout(
+        title_text="Распределение площади участка",
+        showlegend=True
+    )
+    
+    st.plotly_chart(fig, use_container_width=True)
 
 if __name__ == "__main__":
-    main()
+    main() что должен ввести пользователь
