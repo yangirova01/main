@@ -4,122 +4,113 @@ from cianparser import CianParser
 from geopy.geocoders import Nominatim
 import plotly.express as px
 from geopy.extra.rate_limiter import RateLimiter
+from geopy.exc import GeocoderTimedOut, GeocoderUnavailable
 
 # Кэшируем геокодер
 @st.cache_resource
 def init_geocoder():
-    geolocator = Nominatim(user_agent="real_estate_autocomplete_123")
+    geolocator = Nominatim(user_agent="real_estate_analyzer_123")
     return RateLimiter(geolocator.geocode, min_delay_seconds=1)
 
 def get_address_suggestions(query):
-    """Получение подсказок адресов"""
+    """Получение подсказок адресов с обработкой ошибок"""
     try:
+        if not query or len(query.strip()) < 3:
+            return []
+            
         geocode = init_geocoder()
         locations = geocode(query, exactly_one=False, limit=5)
         return [location.address for location in locations] if locations else []
+    
+    except (GeocoderTimedOut, GeocoderUnavailable):
+        st.error("Сервис геокодирования временно недоступен")
+        return []
     except Exception as e:
         st.error(f"Ошибка получения подсказок: {str(e)}")
         return []
 
-def parse_cian_data(location, radius, deal_type, rooms):
-    """Парсинг данных с ЦИАН с обработкой ошибок"""
+def validate_address(address):
+    """Проверка существования адреса"""
     try:
-        parser = CianParser(location=location)
+        if not address or len(address.strip()) < 3:
+            return False, "Адрес слишком короткий"
+            
+        geocode = init_geocoder()
+        location = geocode(address, exactly_one=True)
+        return bool(location), "Адрес не найден" if not location else ""
         
-        # Правильные значения deal_type согласно документации cianparser
-        cian_deal_type = "sale" if deal_type == "Вторичка" else "rent_long"
-        
-        data = parser.get_flats(
-            deal_type=cian_deal_type,
-            rooms=rooms,
-            with_saving_csv=False,
-            additional_settings={"radius": radius}
-        )
-        return pd.DataFrame(data)
     except Exception as e:
-        st.error(f"Ошибка парсинга: {str(e)}")
-        return pd.DataFrame()
+        return False, f"Ошибка проверки адреса: {str(e)}"
 
 def main():
-    st.set_page_config(page_title="Анализ цен с ЦИАН", layout="wide")
-    st.title("🏠 Анализ цен на недвижимость")
+    st.set_page_config(page_title="Анализ цен на недвижимость", layout="wide")
+    st.title("🏠 Анализ вторички и новостроек")
     
     # Инициализация состояния
     if 'address_suggestions' not in st.session_state:
         st.session_state.address_suggestions = []
     if 'selected_address' not in st.session_state:
-        st.session_state.selected_address = "Казань, Касаткина 3"
+        st.session_state.selected_address = ""
+    if 'last_valid_address' not in st.session_state:
+        st.session_state.last_valid_address = ""
 
     # Поле ввода с автодополнением
-    def update_suggestions():
-        query = st.session_state.address_input
-        if len(query) > 3:
-            with st.spinner("Поиск адресов..."):
-                st.session_state.address_suggestions = get_address_suggestions(query)
-
     address_input = st.text_input(
-        "Введите адрес:",
-        st.session_state.selected_address,
+        "Введите адрес (например, 'Алексея Козина'):",
+        value=st.session_state.selected_address,
         key="address_input",
-        on_change=update_suggestions
+        placeholder="Начните вводить адрес..."
     )
 
-    # Выпадающий список подсказок
-    if st.session_state.address_suggestions:
+    # Обновление подсказок при изменении ввода
+    if (address_input != st.session_state.get('last_query', '') and 
+        len(address_input) >= 3):
+        
+        st.session_state.last_query = address_input
+        with st.spinner("Ищем варианты адресов..."):
+            suggestions = get_address_suggestions(address_input)
+            st.session_state.address_suggestions = suggestions
+            st.session_state.show_suggestions = bool(suggestions)
+
+    # Отображение подсказок в выпадающем списке
+    if (st.session_state.get('show_suggestions', False) and 
+        st.session_state.address_suggestions):
+        
         selected_suggestion = st.selectbox(
-            "Выберите адрес из подсказок:",
-            st.session_state.address_suggestions,
+            "Выберите вариант адреса:",
+            options=st.session_state.address_suggestions,
             index=None,
-            placeholder="Начните вводить адрес..."
+            key="address_suggestions",
+            placeholder="Выберите из списка..."
         )
         
         if selected_suggestion:
             st.session_state.selected_address = selected_suggestion
+            st.session_state.last_valid_address = selected_suggestion
+            st.session_state.show_suggestions = False
+            st.rerun()
 
-    # Дополнительные параметры поиска
-    with st.expander("Дополнительные параметры", expanded=True):
-        col1, col2 = st.columns(2)
-        with col1:
-            radius = st.slider("Радиус поиска (км)", 0.5, 5.0, 1.0, 0.1)
-            deal_type = st.radio("Тип недвижимости", ["Вторичка", "Аренда"], index=0)
-        with col2:
-            rooms = st.multiselect(
-                "Количество комнат", 
-                ["Студия", "1", "2", "3", "4+"], 
-                default=["1", "2", "3"]
-            )
-
-    if st.button("Анализировать", type="primary"):
-        if not st.session_state.selected_address:
-            st.warning("Пожалуйста, введите адрес")
+    # Валидация адреса при отправке формы
+    if st.button("Найти недвижимость", type="primary"):
+        current_address = st.session_state.selected_address
+        
+        # Проверка на пустую строку
+        if not current_address or not current_address.strip():
+            st.error("Пожалуйста, введите адрес для поиска")
             return
             
-        with st.spinner("Собираем данные..."):
-            # Преобразуем комнаты в формат для парсера
-            room_mapping = {"Студия": 0, "1": 1, "2": 2, "3": 3, "4+": 4}
-            cian_rooms = [room_mapping[r] for r in rooms]
+        # Проверка существования адреса
+        is_valid, validation_msg = validate_address(current_address)
+        
+        if not is_valid:
+            st.error(validation_msg)
+            return
             
-            # Получаем данные
-            df = parse_cian_data(
-                location=st.session_state.selected_address,
-                radius=radius,
-                deal_type=deal_type,
-                rooms=tuple(cian_rooms)
-            )
-            
-            if not df.empty:
-                st.success(f"Найдено {len(df)} предложений")
-                
-                # Отображаем результаты
-                st.dataframe(df[['address', 'price', 'area', 'rooms']].head(20))
-                
-                # Визуализация
-                st.plotly_chart(
-                    px.histogram(df, x='price', title='Распределение цен'),
-                    use_container_width=True
-                )
-            else:
-                st.warning("Не найдено предложений по заданным критериям")
+        st.session_state.last_valid_address = current_address
+        st.success(f"Адрес подтвержден: {current_address}")
+        
+        # Здесь будет основной код анализа недвижимости
+        # ...
 
 if __name__ == "__main__":
     main()
