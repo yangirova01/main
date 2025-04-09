@@ -6,10 +6,17 @@ from streamlit_folium import st_folium
 import numpy as np
 from itertools import combinations
 from pulp import LpProblem, LpMaximize, LpVariable, lpSum, value
+import ast
 
 # Настройки страницы
 st.set_page_config(layout="wide")
 st.title("Автоматический расчет оптимального количества секций")
+
+# Инициализация состояния сессии
+if 'optimal_layout' not in st.session_state:
+    st.session_state.optimal_layout = None
+if 'positions' not in st.session_state:
+    st.session_state.positions = None
 
 # ===== Ввод данных =====
 st.sidebar.header("Параметры участка")
@@ -24,13 +31,23 @@ coord_input = st.sidebar.text_area(
     height=150
 )
 
-# Парсинг координат
+# Безопасный парсинг координат
+def parse_coordinates(coord_input):
+    try:
+        coords = ast.literal_eval(coord_input)
+        if not isinstance(coords, list) or not all(isinstance(pair, list) and len(pair) == 2 for pair in coords):
+            raise ValueError("Invalid coordinate format")
+        return coords
+    except (SyntaxError, ValueError) as e:
+        st.error(f"Ошибка в координатах: {e}")
+        st.stop()
+
 try:
-    coords = eval(coord_input)
+    coords = parse_coordinates(coord_input)
     site_polygon = Polygon(coords)
     centroid = list(site_polygon.centroid.coords)[0][::-1]  # (lon, lat)
 except Exception as e:
-    st.error(f"Ошибка в координатах: {e}")
+    st.error(f"Ошибка создания полигона: {e}")
     st.stop()
 
 # ===== Параметры секций =====
@@ -94,36 +111,40 @@ def generate_possible_positions(polygon, sections, margin):
 
 # ===== Оптимизация размещения =====
 def optimize_layout(positions, min_distance):
-    # Создаем модель оптимизации
-    model = LpProblem("Maximize_Value", LpMaximize)
-    
-    # Переменные решения (1 - разместить, 0 - нет)
-    x = {i: LpVariable(f"x_{i}", cat="Binary") for i in range(len(positions))}
-    
-    # Целевая функция - максимизация полезной площади
-    model += lpSum(x[i] * positions[i]["value"] for i in range(len(positions)))
-    
-    # Ограничения:
-    # 1. Секции не должны пересекаться
-    for i in range(len(positions)):
-        for j in range(i+1, len(positions)):
-            # Проверяем расстояние между секциями
-            rect_i = box(
-                positions[i]["coords"][0][1], positions[i]["coords"][0][0],
-                positions[i]["coords"][2][1], positions[i]["coords"][2][0]
-            )
-            rect_j = box(
-                positions[j]["coords"][0][1], positions[j]["coords"][0][0],
-                positions[j]["coords"][2][1], positions[j]["coords"][2][0]
-            )
-            if rect_i.distance(rect_j) < meters_to_degrees(min_distance):
-                model += x[i] + x[j] <= 1
-    
-    # Решаем задачу
-    model.solve()
-    
-    # Возвращаем выбранные позиции
-    return [positions[i] for i in range(len(positions)) if value(x[i]) == 1]
+    try:
+        # Создаем модель оптимизации
+        model = LpProblem("Maximize_Value", LpMaximize)
+        
+        # Переменные решения (1 - разместить, 0 - нет)
+        x = {i: LpVariable(f"x_{i}", cat="Binary") for i in range(len(positions))}
+        
+        # Целевая функция - максимизация полезной площади
+        model += lpSum(x[i] * positions[i]["value"] for i in range(len(positions)))
+        
+        # Ограничения:
+        # 1. Секции не должны пересекаться
+        for i in range(len(positions)):
+            for j in range(i+1, len(positions)):
+                # Проверяем расстояние между секциями
+                rect_i = box(
+                    positions[i]["coords"][0][1], positions[i]["coords"][0][0],
+                    positions[i]["coords"][2][1], positions[i]["coords"][2][0]
+                )
+                rect_j = box(
+                    positions[j]["coords"][0][1], positions[j]["coords"][0][0],
+                    positions[j]["coords"][2][1], positions[j]["coords"][2][0]
+                )
+                if rect_i.distance(rect_j) < meters_to_degrees(min_distance):
+                    model += x[i] + x[j] <= 1
+        
+        # Решаем задачу
+        model.solve()
+        
+        # Возвращаем выбранные позиции
+        return [positions[i] for i in range(len(positions)) if value(x[i]) == 1]
+    except Exception as e:
+        st.error(f"Ошибка оптимизации: {e}")
+        return []
 
 # ===== Визуализация =====
 def create_map(polygon, sections):
@@ -146,47 +167,50 @@ def create_map(polygon, sections):
             popup=f"{i}. {sec['type']}",
             color=sec["color"],
             fill=True,
-            fillOpacity=0.7
+            fillOpacity= 0.7
         ).add_to(m)
     
     return m
 
 # ===== Основной поток =====
-if st.button("Рассчитать оптимальное размещение"):
-    if not available_sections:
-        st.warning("Выберите доступные типы секций!")
-    else:
-        with st.spinner("Генерация возможных позиций..."):
-            positions = generate_possible_positions(site_polygon, available_sections, margin)
-        
-        with st.spinner("Оптимизация размещения..."):
-            optimal_layout = optimize_layout(positions, min_distance)
-        
-        # Результаты
-        total_value = sum(sec["value"] for sec in optimal_layout)
-        st.success(f"Оптимальное количество секций: {len(optimal_layout)}")
-        st.success(f"Общая полезная площадь (ТЭП): {total_value:.2f} усл.ед.")
-        
-        # Визуализация
-        col1, col2 = st.columns([2, 1])
-        
-        with col1:
-            m = create_map(site_polygon, optimal_layout)
-            st_folium(m, width=800, height=600)
-        
-        with col2:
-            st.subheader("Размещенные секции:")
-            section_counts = {}
-            for sec in optimal_layout:
-                section_counts[sec["type"]] = section_counts.get(sec["type"], 0) + 1
+with st.form("optimization_form"):
+    if st.form_submit_button("Рассчитать оптимальное размещение"):
+        if not available_sections:
+            st.warning("Выберите доступные типы секций!")
+        else:
+            with st.spinner("Генерация возможных позиций..."):
+                st.session_state.positions = generate_possible_positions(site_polygon, available_sections, margin)
             
-            for sec_type, count in section_counts.items():
-                st.markdown(f"**{sec_type}:** {count} шт.")
-            
-            st.subheader("Статистика:")
-            st.markdown(f"**Общая площадь участка:** {site_polygon.area * 111320**2:.1f} м²")
-            st.markdown(f"**Занятая площадь:** {sum(sec['width']*sec['height']*111320**2 for sec in optimal_layout):.1f} м²")
-            st.markdown(f"**Коэффициент использования:** {sum(sec['value'] for sec in optimal_layout)/site_polygon.area:.2%}")
+            with st.spinner("Оптимизация размещения..."):
+                st.session_state.optimal_layout = optimize_layout(st.session_state.positions, min_distance)
+
+# Показываем результаты, если они есть
+if st.session_state.optimal_layout:
+    # Результаты
+    total_value = sum(sec["value"] for sec in st.session_state.optimal_layout)
+    st.success(f"Оптимальное количество секций: {len(st.session_state.optimal_layout)}")
+    st.success(f"Общая полезная площадь (ТЭП): {total_value:.2f} усл.ед.")
+    
+    # Визуализация
+    col1, col2 = st.columns([2, 1])
+    
+    with col1:
+        m = create_map(site_polygon, st.session_state.optimal_layout)
+        st_folium(m, width=800, height=600)
+    
+    with col2:
+        st.subheader("Размещенные секции:")
+        section_counts = {}
+        for sec in st.session_state.optimal_layout:
+            section_counts[sec["type"]] = section_counts.get(sec["type"], 0) + 1
+        
+        for sec_type, count in section_counts.items():
+            st.markdown(f"**{sec_type}:** {count} шт.")
+        
+        st.subheader("Статистика:")
+        st.markdown(f"**Общая площадь участка:** {site_polygon.area * 111320**2:.1f} м²")
+        st.markdown(f"**Занятая площадь:** {sum(sec['width']*sec['height']*111320**2 for sec in st.session_state.optimal_layout):.1f} м²")
+        st.markdown(f"**Коэффициент использования:** {sum(sec['value'] for sec in st.session_state.optimal_layout)/site_polygon.area:.2%}")
 
 # ===== Дополнительная информация =====
 st.sidebar.markdown("""
