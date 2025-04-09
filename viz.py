@@ -2,42 +2,142 @@ import streamlit as st
 import folium
 import numpy as np
 import pandas as pd
-import geopandas as gpd
-from shapely.geometry import Polygon, MultiPolygon, box
+from shapely.geometry import Polygon, box
 from streamlit_folium import st_folium
-from itertools import combinations
 
-# Настройки страницы
-st.set_page_config(layout="wide")
-st.title("Оптимальное размещение модульного дома на участке")
+# Конфигурация страницы
+st.set_page_config(layout="wide", page_title="Оптимальное размещение модульного дома")
+st.title("Оптимизация размещения модульного дома на участке")
 
-# Инициализация состояния
-if 'results' not in st.session_state:
-    st.session_state.results = None
+# Инициализация состояния сессии
+if 'placements' not in st.session_state:
+    st.session_state.placements = None
 if 'site_polygon' not in st.session_state:
     st.session_state.site_polygon = None
 
-# ===== Константы и вспомогательные функции =====
+# ===== КОНСТАНТЫ =====
 SECTION_TYPES = {
-    "26x16": {"width": 26, "height": 16, "color": "#1f77b4", "name": "Стандарт 26x16"},
-    "28x16": {"width": 28, "height": 16, "color": "#ff7f0e", "name": "Увеличенный 28x16"},
-    "26x18": {"width": 26, "height": 18, "color": "#2ca02c", "name": "С улучшенной планировкой 26x18"},
-    "18x18": {"width": 18, "height": 18, "color": "#9467bd", "name": "Компактный 18x18"}
+    "26x16": {"width": 26, "height": 16, "color": "#1f77b4"},
+    "28x16": {"width": 28, "height": 16, "color": "#ff7f0e"}, 
+    "26x18": {"width": 26, "height": 18, "color": "#2ca02c"},
+    "18x18": {"width": 18, "height": 18, "color": "#9467bd"}
 }
 
-def m_to_deg(meters, lat):
-    """Конвертация метров в градусы с учетом широты"""
-    return meters / (111320 * np.cos(np.radians(lat)))
+# ===== ФУНКЦИИ =====
+def meters_to_degrees(meters, latitude):
+    """Конвертирует метры в градусы с учетом широты"""
+    return meters / (111320 * np.cos(np.radians(latitude)))
 
 def validate_coordinates(coords):
-    """Проверка валидности координат участка"""
+    """Проверяет валидность координат участка"""
     if len(coords) < 3:
         raise ValueError("Участок должен содержать минимум 3 точки")
     if any(len(point) != 2 for point in coords):
         raise ValueError("Каждая точка должна содержать 2 координаты")
     return True
 
-# ===== Ввод данных =====
+def calculate_placements(site_poly, sections, margin, spacing, floors, orientation):
+    """Вычисляет возможные варианты размещения секций"""
+    placements = []
+    min_lon, min_lat, max_lon, max_lat = site_poly.bounds
+    centroid_lat = site_poly.centroid.y
+    
+    angles = [0, 90] if orientation == "Любая" else [0] if orientation == "Север-Юг" else [90]
+    
+    for angle in angles:
+        sections_meta = []
+        total_width = 0
+        
+        for section in sections:
+            w, h = (SECTION_TYPES[section]["height"], SECTION_TYPES[section]["width"]) if angle == 90 else (
+                   (SECTION_TYPES[section]["width"], SECTION_TYPES[section]["height"]))
+            
+            sections_meta.append({
+                "width": meters_to_degrees(w, centroid_lat),
+                "height": meters_to_degrees(h, centroid_lat),
+                "color": SECTION_TYPES[section]["color"]
+            })
+            total_width += meters_to_degrees(w + spacing, centroid_lat)
+        
+        max_height = max(s["height"] for s in sections_meta)
+        margin_deg = meters_to_degrees(margin, centroid_lat)
+        
+        for lon in np.linspace(min_lon + margin_deg, max_lon - total_width - margin_deg, 15):
+            for lat in np.linspace(min_lat + margin_deg, max_lat - max_height - margin_deg, 15):
+                current_x = lon
+                valid = True
+                house_sections = []
+                
+                for section in sections_meta:
+                    section_poly = box(
+                        current_x, lat,
+                        current_x + section["width"], lat + section["height"]
+                    )
+                    
+                    if not site_poly.contains(section_poly.buffer(-margin_deg/2)):
+                        valid = False
+                        break
+                    
+                    house_sections.append({
+                        "poly": section_poly,
+                        "color": section["color"]
+                    })
+                    current_x += section["width"] + meters_to_degrees(spacing, centroid_lat)
+                
+                if valid and house_sections:
+                    area = sum(
+                        (p["poly"].bounds[2] - p["poly"].bounds[0]) *
+                        (p["poly"].bounds[3] - p["poly"].bounds[1]) *
+                        (111320**2) * floors * 0.7
+                        for p in house_sections
+                    )
+                    
+                    placements.append({
+                        "position": [lon, lat],
+                        "angle": angle,
+                        "sections": house_sections,
+                        "total_area": area,
+                        "efficiency": area / (site_poly.area * (111320**2))
+                    })
+    
+    return sorted(placements, key=lambda x: -x["efficiency"])[:10]
+
+def create_placement_map(site_poly, placements):
+    """Создает интерактивную карту с вариантами размещения"""
+    m = folium.Map(location=[site_poly.centroid.y, site_poly.centroid.x], zoom_start=17)
+    
+    # Отображение участка
+    folium.GeoJson(
+        site_poly.__geo_interface__,
+        style_function=lambda x: {
+            "fillColor": "#ffff00",
+            "color": "#ffa500",
+            "weight": 2,
+            "fillOpacity": 0.2
+        },
+        name="Граница участка"
+    ).add_to(m)
+    
+    # Отображение вариантов размещения
+    for i, place in enumerate(placements, 1):
+        for section in place["sections"]:
+            folium.Polygon(
+                locations=[
+                    [section["poly"].bounds[1], section["poly"].bounds[0]],
+                    [section["poly"].bounds[1], section["poly"].bounds[2]],
+                    [section["poly"].bounds[3], section["poly"].bounds[2]],
+                    [section["poly"].bounds[3], section["poly"].bounds[0]]
+                ],
+                color=section["color"],
+                fill=True,
+                fillOpacity=0.7,
+                popup=f"Вариант {i}\nУгол: {place['angle']}°"
+            ).add_to(m)
+    
+    folium.LayerControl().add_to(m)
+    return m
+
+# ===== ИНТЕРФЕЙС =====
 with st.sidebar:
     st.header("Параметры участка")
     coord_input = st.text_area(
@@ -46,222 +146,64 @@ with st.sidebar:
         [55.796288, 37.535120],
         [55.795950, 37.535350],
         [55.796050, 37.536000]]""",
-        height=150
+        height=120
     )
-
+    
     st.header("Конфигурация дома")
     section_count = st.slider("Количество секций:", 2, 5, 2)
-    selected_sections = []
-    for i in range(section_count):
-        selected_sections.append(st.selectbox(
-            f"Секция {i+1}:",
-            list(SECTION_TYPES.keys()),
-            format_func=lambda x: SECTION_TYPES[x]["name"],
-            key=f"section_{i}"
-        ))
-
+    selected_sections = [st.selectbox(
+        f"Секция {i+1}:", list(SECTION_TYPES.keys()), key=f"section_{i}"
+    ) for i in range(section_count)]
+    
     st.header("Параметры размещения")
     margin = st.slider("Отступ от границ (м):", 0, 20, 5)
-    min_distance = st.slider("Расстояние между секциями (м):", 0, 10, 2)
+    spacing = st.slider("Расстояние между секциями (м):", 0, 10, 2)
     floors = st.slider("Этажность:", 1, 25, 5)
-    orientation = st.radio("Ориентация", ["Любая", "Север-Юг", "Восток-Запад"], index=0)
+    orientation = st.radio("Ориентация дома:", ["Любая", "Север-Юг", "Восток-Запад"])
 
-# Парсинг координат участка
+# Обработка ввода координат
 try:
     coords = eval(coord_input)
     validate_coordinates(coords)
     site_polygon = Polygon(coords)
-    centroid = list(site_polygon.centroid.coords)[0][::-1]
     st.session_state.site_polygon = site_polygon
 except Exception as e:
     st.error(f"Ошибка ввода данных: {str(e)}")
     st.stop()
 
-# ===== Алгоритм размещения =====
-@st.cache_data(show_spinner="Подбираем оптимальные конфигурации...")
-def generate_placements(_site_polygon, sections, margin, min_distance, floors, orientation):
-    """Генерация возможных комбинаций секций"""
-    placements = []
-    min_lon, min_lat, max_lon, max_lat = _site_polygon.bounds
-    
-    # Определение допустимых углов поворота
-    angles = [0, 90] if orientation == "Любая" else (
-        [0] if orientation == "Север-Юг" else [90]
-    )
-    
-    for angle in angles:
-        section_polys = []
-        total_width = 0
-        total_height = 0
-        
-        # Рассчитываем габариты всего дома
-        for section in sections:
-            w = SECTION_TYPES[section]["width"]
-            h = SECTION_TYPES[section]["height"]
-            if angle == 90:
-                w, h = h, w
-            section_polys.append({
-                "w": m_to_deg(w, centroid[1]),
-                "h": m_to_deg(h, centroid[1]),
-                "color": SECTION_TYPES[section]["color"],
-                "name": SECTION_TYPES[section]["name"]
-            })
-            total_width += m_to_deg(w, centroid[1]) + m_to_deg(min_distance, centroid[1])
-            total_height = max(total_height, m_to_deg(h, centroid[1]))
-        
-        margin_deg = m_to_deg(margin, centroid[1])
-        
-        # Оптимизированный шаг для больших участков
-        lon_steps = 20 if (max_lon - min_lon) > 0.001 else 10
-        lat_steps = 20 if (max_lat - min_lat) > 0.001 else 10
-        
-        # Поиск позиций
-        for lon in np.linspace(min_lon + margin_deg, max_lon - total_width - margin_deg, lon_steps):
-            for lat in np.linspace(min_lat + margin_deg, max_lat - total_height - margin_deg, lat_steps):
-                current_x = lon
-                valid = True
-                house_polys = []
-                
-                for section in section_polys:
-                    sec_poly = box(
-                        current_x, lat,
-                        current_x + section["w"], lat + section["h"]
-                    )
-                    
-                    # Проверка на вхождение в участок и отступы
-                    if not _site_polygon.contains(sec_poly.buffer(-margin_deg/2)):
-                        valid = False
-                        break
-                    
-                    house_polys.append({
-                        "poly": sec_poly,
-                        "color": section["color"],
-                        "name": section["name"]
-                    })
-                    current_x += section["w"] + m_to_deg(min_distance, centroid[1])
-                
-                if valid and house_polys:
-                    # Расчет общей площади с учетом КИ (коэффициента использования)
-                    total_area = sum(
-                        (p["poly"].bounds[2]-p["poly"].bounds[0]) * 
-                        (p["poly"].bounds[3]-p["poly"].bounds[1]) * 
-                        (111320**2) * floors * 0.7  # 0.7 - типовой КИ
-                        for p in house_polys
-                    )
-                    
-                    placements.append({
-                        "position": [lon, lat],
-                        "angle": angle,
-                        "sections": house_polys,
-                        "total_area": total_area,
-                        "efficiency": total_area / _site_polygon.area * (111320**2)
-                    })
-    
-    # Сортировка по эффективности использования площади
-    return sorted(placements, key=lambda x: -x["efficiency"])[:15]
+# Основной блок
+if st.button("Рассчитать варианты размещения", type="primary"):
+    with st.spinner("Оптимизация размещения..."):
+        placements = calculate_placements(
+            site_polygon,
+            selected_sections,
+            margin,
+            spacing,
+            floors,
+            orientation
+        )
+        st.session_state.placements = placements
 
-# ===== Визуализация =====
-def create_map(_site_polygon, placements):
-    """Создание интерактивной карты с вариантами"""
-    m = folium.Map(location=centroid, zoom_start=17, tiles='cartodbpositron')
+if st.session_state.placements:
+    st.success(f"Найдено {len(st.session_state.placements)} вариантов")
     
-    # Участок
-    folium.GeoJson(
-        _site_polygon.__geo_interface__,
-        style_function=lambda x: {
-            "fillColor": "#ffff00",
-            "color": "#ffa500",
-            "weight": 2,
-            "fillOpacity": 0.2
-        },
-        name="Граница участка",
-        tooltip="Ваш участок"
-    ).add_to(m)
+    col1, col2 = st.columns([2, 1])
     
-    # Варианты размещения
-    for i, place in enumerate(placements, 1):
-        group = folium.FeatureGroup(name=f"Вариант {i}", show=False)
-        
-        for j, section in enumerate(place["sections"], 1):
-            coords = [
-                [section["poly"].bounds[1], section["poly"].bounds[0]],
-                [section["poly"].bounds[1], section["poly"].bounds[2]],
-                [section["poly"].bounds[3], section["poly"].bounds[2]],
-                [section["poly"].bounds[3], section["poly"].bounds[0]]
-            ]
-            
-            folium.Polygon(
-                locations=coords,
-                color=section["color"],
-                fill=True,
-                fillOpacity=0.7,
-                weight=1,
-                popup=f"""<b>Вариант {i}</b><br>
-                          Секция {j}: {section['name']}<br>
-                          Угол: {place['angle']}°<br>
-                          Площадь: {place['total_area']/len(place['sections']):.1f} м²"""
-            ).add_to(group)
-        
-        group.add_to(m)
+    with col1:
+        st_folium(
+            create_placement_map(site_polygon, st.session_state.placements),
+            width=700,
+            height=500
+        )
     
-    folium.LayerControl(collapsed=False).add_to(m)
-    folium.LatLngPopup().add_to(m)
-    return m
-
-# ===== Основной блок =====
-col1, col2 = st.columns([3, 1])
-
-with col2:
-    if st.button("🔄 Сгенерировать варианты", type="primary", use_container_width=True):
-        with st.spinner("Оптимизируем размещение..."):
-            placements = generate_placements(
-                st.session_state.site_polygon,
-                selected_sections,
-                margin,
-                min_distance,
-                floors,
-                orientation
-            )
-            st.session_state.results = placements
-            
-    if st.session_state.results:
-        st.success(f"Найдено {len(st.session_state.results)} вариантов")
-        best_option = max(st.session_state.results, key=lambda x: x['efficiency'])
-        
-        with st.expander("Лучший вариант", expanded=True):
-            st.metric("Общая площадь", f"{best_option['total_area']:,.0f} м²")
-            st.metric("Эффективность использования", f"{best_option['efficiency']:.1%}")
-            st.metric("Этажность", floors)
-            st.metric("Угол поворота", f"{best_option['angle']}°")
-            
-        if st.download_button(
-            "📥 Экспорт в CSV",
-            pd.DataFrame([{
-                "Вариант": i+1,
-                "Площадь (м²)": p["total_area"],
-                "Эффективность": f"{p['efficiency']:.1%}",
-                "Угол": f"{p['angle']}°",
-                "Секций": len(p["sections"])
-            } for i, p in enumerate(st.session_state.results)]).to_csv(index=False).encode('utf-8'),
-            "варианты_размещения.csv",
-            "text/csv",
-            use_container_width=True
-        ):
-            st.toast("Файл экспортирован!", icon="✅")
-
-with col1:
-    if st.session_state.results:
-        m = create_map(st.session_state.site_polygon, st.session_state.results)
-        st_folium(m, width=800, height=600, returned_objects=[])
-        
-        st.subheader("Топ вариантов")
+    with col2:
+        st.subheader("Лучшие варианты")
         df = pd.DataFrame([{
             "Вариант": i+1,
-            "Площадь, м²": f"{p['total_area']:,.0f}",
+            "Площадь (м²)": f"{p['total_area']:,.0f}",
             "Эффективность": f"{p['efficiency']:.1%}",
-            "Угол": f"{p['angle']}°",
-            "Секций": len(p["sections"])
-        } for i, p in enumerate(st.session_state.results)])
+            "Угол": f"{p['angle']}°"
+        } for i, p in enumerate(st.session_state.placements)])
         
         st.dataframe(
             df,
@@ -275,6 +217,14 @@ with col1:
                 )
             }
         )
-    else:
-        st.info("Задайте параметры и нажмите 'Сгенерировать варианты'")
-        st.image("https://i.imgur.com/JiQkLZP.png", caption="Пример модульного дома")
+        
+        if st.button("Экспорт в CSV"):
+            csv = df.to_csv(index=False).encode('utf-8')
+            st.download_button(
+                "Скачать",
+                csv,
+                "размещение_дома.csv",
+                "text/csv"
+            )
+else:
+    st.info("Задайте параметры и нажмите 'Рассчитать варианты размещения'")
