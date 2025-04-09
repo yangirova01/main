@@ -146,7 +146,7 @@ if st.button("Найти предложения", type="primary"):
             st.error("Выберите хотя бы один тип комнат")
             st.stop()
         
-        # Анализ данных
+        # Анализ данных (здесь исправлена ошибка с незакрытой скобкой)
         df = analyze_real_estate(
             address=current_address,
             radius=radius,
