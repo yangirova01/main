@@ -15,4 +15,4 @@ ezdxf>=1.1.0
 matplotlib>=3.7.0
 shapely>=2.0.1
 streamlit-folium>=0.11.0
-ast==1.0.0
+
