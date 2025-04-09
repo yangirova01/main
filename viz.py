@@ -1,15 +1,14 @@
 import streamlit as st
 import matplotlib.pyplot as plt
-from shapely.geometry import Polygon, box, Point
+from shapely.geometry import Polygon, box, MultiPolygon
 import numpy as np
-import pulp  # для оптимизации
-from itertools import product
+from itertools import combinations
 
 # Настройки страницы
 st.set_page_config(layout="wide")
 st.title("Оптимальная посадка зданий на участке")
 st.markdown("""
-**Цель:** Максимизировать ТЭП (жилая + коммерческая площадь) с учетом нормативов.
+**Цель:** Максимизировать полезную площадь (ТЭП) с учетом нормативов и ограничений.
 """)
 
 # ===== Ввод данных =====
@@ -37,154 +36,145 @@ coord_input = st.sidebar.text_area(
 try:
     coords = eval(coord_input)
     site_polygon = Polygon(coords)
-except:
-    st.error("Ошибка загрузки координат!")
+except Exception as e:
+    st.error(f"Ошибка загрузки координат: {e}")
     st.stop()
 
-# ===== Параметры секций =====
+# ===== Параметры зданий =====
 st.sidebar.header("Параметры зданий")
 
 # Размеры секций (из ТЗ)
-sections = [
-    {"name": "26x16", "width": 26, "height": 16, "type": "Жилая"},
-    {"name": "28x16", "width": 28, "height": 16, "type": "Жилая"},
-    {"name": "26x18", "width": 26, "height": 18, "type": "Жилая"},
-    {"name": "18x18", "width": 18, "height": 18, "type": "Жилая"},
-    {"name": "Коммерция", "width": 30, "height": 20, "type": "Коммерческая"},
-]
+SECTION_TYPES = {
+    "Жилая 26x16": {"width": 26, "height": 16, "type": "Жилая", "color": "blue"},
+    "Жилая 28x16": {"width": 28, "height": 16, "type": "Жилая", "color": "green"},
+    "Жилая 26x18": {"width": 26, "height": 18, "type": "Жилая", "color": "red"},
+    "Жилая 18x18": {"width": 18, "height": 18, "type": "Жилая", "color": "purple"},
+    "Коммерция 30x20": {"width": 30, "height": 20, "type": "Коммерческая", "color": "orange"}
+}
 
-# Выбор секций
 selected_sections = st.sidebar.multiselect(
-    "Какие секции использовать?",
-    [s["name"] for s in sections],
-    default=["26x16", "18x18"]
+    "Выберите типы секций:",
+    list(SECTION_TYPES.keys()),
+    default=["Жилая 26x16", "Жилая 18x18"]
 )
 
-# Этажность
+# Параметры размещения
 floors = st.sidebar.slider("Этажность:", 1, 25, 5)
-
-# Отступы
 margin = st.sidebar.slider("Отступ от границ (м):", 0, 20, 5)
+step = st.sidebar.slider("Шаг сетки (м):", 1, 10, 3)
 
-# ===== Ограничения =====
-st.sidebar.header("Ограничения")
-
-# Парковки
-parking_type = st.sidebar.selectbox(
-    "Тип парковки:",
-    ["Плоскостная", "Подземная", "Многоуровневая"]
-)
-
-# Детский сад / школа
-with st.sidebar.expander("Социальные объекты"):
-    has_kindergarten = st.checkbox("Детский сад (встроенный)")
-    has_school = st.checkbox("Школа (отдельно стоящая)")
-
-# ===== Оптимизация =====
-def optimize_placement(site, sections_list, floors, margin):
-    """Оптимизирует размещение секций на участке."""
-    # Генерация возможных позиций
+# ===== Алгоритм размещения =====
+def generate_positions(site, sections, margin, step):
+    """Генерирует возможные позиции для секций"""
     positions = []
     min_x, min_y, max_x, max_y = site.bounds
-
-    for section in sections_list:
-        for angle in [0, 90]:
+    
+    for section_name in sections:
+        section = SECTION_TYPES[section_name]
+        for angle in [0, 90]:  # 0 и 90 градусов
             w = section["width"] if angle == 0 else section["height"]
             h = section["height"] if angle == 0 else section["width"]
-
-            for x in np.arange(min_x + margin, max_x - w - margin, 5):
-                for y in np.arange(min_y + margin, max_y - h - margin, 5):
+            
+            for x in np.arange(min_x + margin, max_x - w - margin, step):
+                for y in np.arange(min_y + margin, max_y - h - margin, step):
                     rect = box(x, y, x + w, y + h)
                     if site.contains(rect):
                         positions.append({
-                            "section": section,
+                            "section": section_name,
                             "x": x, "y": y,
                             "width": w, "height": h,
-                            "angle": angle
+                            "angle": angle,
+                            "area": w * h * floors * 0.7  # Расчет ТЭП
                         })
+    return positions
 
-    # Создаем модель PuLP
-    model = pulp.LpProblem("Maximize_TEP", pulp.LpMaximize)
+def optimize_placement(positions):
+    """Оптимизирует размещение для максимальной площади"""
+    positions.sort(key=lambda x: -x["area"])  # Сортируем по убыванию площади
+    placed = []
+    
+    for pos in positions:
+        conflict = False
+        for placed_pos in placed:
+            # Проверяем пересечение прямоугольников
+            rect1 = box(pos["x"], pos["y"], 
+                       pos["x"] + pos["width"], 
+                       pos["y"] + pos["height"])
+            rect2 = box(placed_pos["x"], placed_pos["y"], 
+                        placed_pos["x"] + placed_pos["width"], 
+                        placed_pos["y"] + placed_pos["height"])
+            if rect1.intersects(rect2):
+                conflict = True
+                break
+                
+        if not conflict:
+            placed.append(pos)
+            
+    return placed
 
-    # Переменные: 1 если секция размещена, 0 иначе
-    x = pulp.LpVariable.dicts(
-        "pos", range(len(positions)), 
-        cat="Binary"
-    )
-
-    # Целевая функция: максимизация площади
-    model += pulp.lpSum(
-        x[i] * (positions[i]["section"]["width"] * positions[i]["section"]["height"] * floors * 0.7)
-        for i in range(len(positions))
-    )
-
-    # Ограничения:
-    # 1) Секции не пересекаются
-    for i in range(len(positions)):
-        for j in range(i + 1, len(positions)):
-            rect_i = box(
-                positions[i]["x"], positions[i]["y"],
-                positions[i]["x"] + positions[i]["width"],
-                positions[i]["y"] + positions[i]["height"]
-            )
-            rect_j = box(
-                positions[j]["x"], positions[j]["y"],
-                positions[j]["x"] + positions[j]["width"],
-                positions[j]["y"] + positions[j]["height"]
-            )
-            if rect_i.intersects(rect_j):
-                model += x[i] + x[j] <= 1
-
-    # Решаем задачу
-    model.solve()
-
-    # Возвращаем выбранные позиции
-    return [positions[i] for i in range(len(positions)) if x[i].value() == 1]
-
-# ===== Запуск оптимизации =====
-if st.button("Рассчитать оптимальное размещение"):
-    selected_sections_data = [s for s in sections if s["name"] in selected_sections]
-    if not selected_sections_data:
-        st.warning("Выберите секции!")
-    else:
-        with st.spinner("Оптимизация..."):
-            best_positions = optimize_placement(site_polygon, selected_sections_data, floors, margin)
-
-        # Визуализация
-        fig, ax = plt.subplots(figsize=(12, 10))
-        x, y = site_polygon.exterior.xy
-        ax.plot(x, y, 'k-', linewidth=2, label="Граница участка")
-
-        for i, pos in enumerate(best_positions):
-            rect = plt.Rectangle(
-                (pos["x"], pos["y"]), pos["width"], pos["height"],
-                linewidth=1, edgecolor="r", facecolor="none",
-                label=f"{pos['section']['name']} ({i+1})"
-            )
-            ax.add_patch(rect)
-            ax.text(
-                pos["x"] + pos["width"] / 2,
-                pos["y"] + pos["height"] / 2,
-                f"{i+1}\n{pos['section']['name']}",
-                ha="center", va="center", color="b"
-            )
-
-        ax.set_aspect("equal")
-        ax.legend(bbox_to_anchor=(1.05, 1), loc="upper left")
-        st.pyplot(fig)
-
-        # Вывод ТЭП
-        total_area = sum(
-            pos["width"] * pos["height"] * floors * 0.7
-            for pos in best_positions
+# ===== Визуализация =====
+def plot_site(site, buildings):
+    """Визуализирует участок и здания"""
+    fig, ax = plt.subplots(figsize=(12, 10))
+    
+    # Участок
+    x, y = site.exterior.xy
+    ax.plot(x, y, 'k-', linewidth=2, label="Граница участка")
+    
+    # Здания
+    for i, building in enumerate(buildings, 1):
+        color = SECTION_TYPES[building["section"]]["color"]
+        rect = plt.Rectangle(
+            (building["x"], building["y"]), 
+            building["width"], building["height"],
+            linewidth=1, edgecolor=color, facecolor=color + (0.3,),
+            label=f"{building['section']} ({i})"
         )
-        st.success(f"**Максимальная полезная площадь (ТЭП):** {total_area:.2f} м²")
+        ax.add_patch(rect)
+        ax.text(
+            building["x"] + building["width"]/2,
+            building["y"] + building["height"]/2,
+            f"{i}\n{building['section']}",
+            ha="center", va="center", color="black"
+        )
+    
+    ax.set_aspect("equal")
+    ax.legend(bbox_to_anchor=(1.05, 1), loc="upper left")
+    st.pyplot(fig)
 
-# ===== Что можно добавить? =====
-st.sidebar.header("Доработки")
+# ===== Основной поток =====
+if st.button("Рассчитать оптимальное размещение"):
+    with st.spinner("Идет расчет..."):
+        # Генерация и оптимизация позиций
+        positions = generate_positions(site_polygon, selected_sections, margin, step)
+        optimized = optimize_placement(positions)
+        
+        # Расчет общей площади
+        total_area = sum(b["area"] for b in optimized)
+        
+        # Визуализация
+        st.success(f"**Оптимальная полезная площадь (ТЭП):** {total_area:.2f} м²")
+        st.info(f"**Размещено объектов:** {len(optimized)}")
+        plot_site(site_polygon, optimized)
+        
+        # Вывод таблицы с результатами
+        st.subheader("Детали размещения")
+        result_table = []
+        for i, b in enumerate(optimized, 1):
+            result_table.append({
+                "№": i,
+                "Тип": b["section"],
+                "Координаты (X,Y)": f"{b['x']:.1f}, {b['y']:.1f}",
+                "Размеры (ШxГ)": f"{b['width']}x{b['height']}",
+                "Площадь (ТЭП)": f"{b['area']:.1f} м²"
+            })
+        st.table(result_table)
+
+# ===== Дополнительная информация =====
+st.sidebar.header("О проекте")
 st.sidebar.markdown("""
-- **Учет парковок** (по формуле из ТЗ)  
-- **Расчет благоустройства** (озеленение, детские площадки)  
-- **Оптимизация под детские сады/школы**  
-- **Экспорт в KML/DWG**  
+Этот инструмент помогает определить оптимальное расположение зданий на участке с учетом:
+- Градостроительных нормативов
+- Требований к отступам
+- Максимизации полезной площади
 """)
