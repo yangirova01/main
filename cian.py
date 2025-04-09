@@ -17,7 +17,7 @@ if 'show_suggestions' not in st.session_state:
 # Кэшированный геокодер
 @st.cache_resource
 def get_geocoder():
-    geolocator = Nominatim(user_agent="real_estate_app_2024_v2")
+    geolocator = Nominatim(user_agent="real_estate_app_2024_v3")
     return RateLimiter(geolocator.geocode, min_delay_seconds=1)
 
 def get_address_suggestions(query):
