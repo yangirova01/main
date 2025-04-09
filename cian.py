@@ -152,7 +152,7 @@ if st.button("Найти предложения", type="primary"):
             radius=radius,
             offer_type=offer_type,
             rooms=tuple(rooms_to_parse)
-        
+        )
         if df.empty:
             st.warning("По вашему запросу ничего не найдено")
             st.stop()
