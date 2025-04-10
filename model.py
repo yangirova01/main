@@ -2,8 +2,14 @@ import streamlit as st
 import matplotlib.pyplot as plt
 import numpy as np
 
-st.title("Визуализация участка по координатам")
+st.title("Визуализация участка по координатам с расчетом площади")
 st.markdown("Введите координаты в формате `[[X1, Y1], [X2, Y2], ...]`")
+
+# Функция для расчета площади по формуле Гаусса
+def calculate_area(coords):
+    x = coords[:, 0]
+    y = coords[:, 1]
+    return 0.5 * np.abs(np.dot(x, np.roll(y, 1)) - np.dot(y, np.roll(x, 1)))
 
 # Поле для ввода координат
 coord_input = st.text_area(
@@ -29,25 +35,36 @@ coord_input = st.text_area(
 try:
     # Преобразуем строку в список координат
     coords = eval(coord_input)  
-    coords = np.array(coords)  
-
+    coords = np.array(coords)
+    
+    # Проверяем, что участок замкнутый
+    if not np.array_equal(coords[0], coords[-1]):
+        coords = np.vstack([coords, coords[0]])
+    
+    # Рассчитываем площадь
+    area = calculate_area(coords)
+    
     # Строим график
     fig, ax = plt.subplots(figsize=(10, 8))
     ax.plot(coords[:, 0], coords[:, 1], 'b-', linewidth=2)  
     ax.plot(coords[:, 0], coords[:, 1], 'ro')  
 
     # Подписываем вершины
-    for i, (x, y) in enumerate(coords):
+    for i, (x, y) in enumerate(coords[:-1]):  # Исключаем последнюю точку (дубликат первой)
         ax.text(x, y, str(i + 1), fontsize=12, ha='right')
 
-    ax.set_title("Визуализация участка")
+    ax.set_title(f"Визуализация участка\nПлощадь: {area:.2f} кв.м")
     ax.set_xlabel("Координата X")
     ax.set_ylabel("Координата Y")
     ax.grid(True)
-    ax.axis('equal')  # Сохраняем пропорции
+    ax.axis('equal')
 
     # Выводим график в Streamlit
     st.pyplot(fig)
+    
+    # Дополнительная информация о площади
+    st.success(f"Площадь участка: {area:.2f} квадратных метров")
+    st.info(f"Это примерно {area/10000:.4f} гектар")
 
 except Exception as e:
     st.error(f"Ошибка: {e}. Проверьте формат ввода!")
@@ -56,9 +73,13 @@ except Exception as e:
 st.markdown("---")
 st.markdown("**Примеры координат для теста:**")
 st.code("""
-# Треугольник
+# Треугольник (площадь ~5000 кв.м)
 [[5470500, 7517000], [5470600, 7517000], [5470550, 7517100], [5470500, 7517000]]
 
-# Прямоугольник
+# Прямоугольник 100x100м (площадь 10000 кв.м)
 [[5470400, 7517200], [5470400, 7517300], [5470500, 7517300], [5470500, 7517200], [5470400, 7517200]]
+
+# Участок сложной формы
+[[5471000, 7517500], [5470980, 7517480], [5470970, 7517520], [5470990, 7517550], 
+[5471030, 7517530], [5471020, 7517510], [5471000, 7517500]]
 """)
